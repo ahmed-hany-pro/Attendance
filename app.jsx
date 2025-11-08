@@ -1,51 +1,71 @@
 import React, { useState, useEffect } from 'react';
-import { User, Clock, Calendar, CheckCircle, UserPlus, LogIn, AlertCircle } from 'lucide-react';
+import { User, Clock, Calendar, CheckCircle, UserPlus, LogIn, AlertCircle, Fingerprint } from 'lucide-react';
 
 const GOOGLE_SHEETS_CONFIG = {
   webAppUrl: "https://script.google.com/macros/s/AKfycbzbbe5iB4YX-j8pZS6WjPlYkrhZz5Np1kpTb87bAoKBEvOAGIbYfNhXzQRRoRlKHdLp/exec",
   enableLogging: true,
 };
 
-// Simulated fingerprint authentication (browser-based)
-const simulateFingerprint = async (userId) => {
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      const fingerprintData = btoa(`fingerprint_${userId}_${Date.now()}`);
-      resolve(fingerprintData);
-    }, 1500);
-  });
+// WebAuthn Helper Functions
+const webAuthnSupported = () => {
+  return window.PublicKeyCredential !== undefined;
+};
+
+const bufferToBase64 = (buffer) => {
+  return btoa(String.fromCharCode(...new Uint8Array(buffer)));
+};
+
+const base64ToBuffer = (base64) => {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes.buffer;
 };
 
 const FingerprintAttendance = () => {
-  const [mode, setMode] = useState('home'); // home, register, attendance
+  const [mode, setMode] = useState('home');
   const [userName, setUserName] = useState('');
   const [selectedUser, setSelectedUser] = useState('');
   const [registeredUsers, setRegisteredUsers] = useState([]);
   const [scanning, setScanning] = useState(false);
   const [message, setMessage] = useState({ text: '', type: '' });
   const [currentDateTime, setCurrentDateTime] = useState(new Date());
+  const [webAuthnAvailable, setWebAuthnAvailable] = useState(false);
 
   useEffect(() => {
     loadRegisteredUsers();
+    setWebAuthnAvailable(webAuthnSupported());
     const timer = setInterval(() => setCurrentDateTime(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
 
   const loadRegisteredUsers = () => {
-    const users = JSON.parse(localStorage.getItem('fingerprintUsers') || '[]');
-    setRegisteredUsers(users);
+    const usersData = {};
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key.startsWith('webauthn_user_')) {
+        const userData = JSON.parse(localStorage.getItem(key));
+        usersData[userData.id] = userData;
+      }
+    }
+    setRegisteredUsers(Object.values(usersData));
   };
 
   const saveUserToLocalStorage = (user) => {
-    const users = JSON.parse(localStorage.getItem('fingerprintUsers') || '[]');
-    users.push(user);
-    localStorage.setItem('fingerprintUsers', JSON.stringify(users));
-    setRegisteredUsers(users);
+    localStorage.setItem(`webauthn_user_${user.id}`, JSON.stringify(user));
+    loadRegisteredUsers();
   };
 
   const handleRegister = async () => {
     if (!userName.trim()) {
       setMessage({ text: 'Please enter your name', type: 'error' });
+      return;
+    }
+
+    if (!webAuthnAvailable) {
+      setMessage({ text: 'WebAuthn not supported on this device', type: 'error' });
       return;
     }
 
@@ -56,14 +76,45 @@ const FingerprintAttendance = () => {
     }
 
     setScanning(true);
-    setMessage({ text: 'Scanning fingerprint...', type: 'info' });
+    setMessage({ text: 'Please authenticate with your fingerprint/biometric...', type: 'info' });
 
     try {
-      const fingerprintData = await simulateFingerprint(userName);
+      const userId = `user_${Date.now()}`;
+      const challenge = new Uint8Array(32);
+      crypto.getRandomValues(challenge);
+
+      const publicKeyCredentialCreationOptions = {
+        challenge: challenge,
+        rp: {
+          name: "Attendance System",
+          id: window.location.hostname,
+        },
+        user: {
+          id: new TextEncoder().encode(userId),
+          name: userName.toLowerCase().replace(/\s+/g, '_'),
+          displayName: userName,
+        },
+        pubKeyCredParams: [
+          { alg: -7, type: "public-key" },
+          { alg: -257, type: "public-key" }
+        ],
+        authenticatorSelection: {
+          authenticatorAttachment: "platform",
+          userVerification: "required",
+        },
+        timeout: 60000,
+        attestation: "none"
+      };
+
+      const credential = await navigator.credentials.create({
+        publicKey: publicKeyCredentialCreationOptions
+      });
+
       const newUser = {
-        id: Date.now(),
+        id: userId,
         name: userName,
-        fingerprint: fingerprintData,
+        credentialId: bufferToBase64(credential.rawId),
+        publicKey: bufferToBase64(credential.response.getPublicKey()),
         registeredAt: new Date().toISOString()
       };
 
@@ -75,7 +126,12 @@ const FingerprintAttendance = () => {
         setMessage({ text: '', type: '' });
       }, 2000);
     } catch (error) {
-      setMessage({ text: 'Registration failed. Please try again.', type: 'error' });
+      console.error('Registration error:', error);
+      if (error.name === 'NotAllowedError') {
+        setMessage({ text: 'Authentication cancelled or not allowed', type: 'error' });
+      } else {
+        setMessage({ text: 'Registration failed. Please try again.', type: 'error' });
+      }
     } finally {
       setScanning(false);
     }
@@ -87,36 +143,67 @@ const FingerprintAttendance = () => {
       return;
     }
 
+    if (!webAuthnAvailable) {
+      setMessage({ text: 'WebAuthn not supported on this device', type: 'error' });
+      return;
+    }
+
     setScanning(true);
-    setMessage({ text: 'Scanning fingerprint...', type: 'info' });
+    setMessage({ text: 'Please authenticate with your fingerprint/biometric...', type: 'info' });
 
     try {
-      const fingerprintData = await simulateFingerprint(selectedUser);
-      const user = registeredUsers.find(u => u.id === parseInt(selectedUser));
+      const user = registeredUsers.find(u => u.id === selectedUser);
       
-      if (user) {
-        const now = new Date();
-        const attendanceData = {
-          name: user.name,
-          date: now.toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' }),
-          day: now.toLocaleDateString('en-US', { weekday: 'long' }),
-          time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-          timestamp: now.toISOString()
-        };
-
-        // Send to Google Sheets
-        await sendToGoogleSheets(attendanceData);
-        
-        setMessage({ text: `Attendance marked for ${user.name}!`, type: 'success' });
-        setSelectedUser('');
-        setTimeout(() => {
-          setMode('home');
-          setMessage({ text: '', type: '' });
-        }, 2000);
+      if (!user) {
+        setMessage({ text: 'User not found', type: 'error' });
+        setScanning(false);
+        return;
       }
+
+      const challenge = new Uint8Array(32);
+      crypto.getRandomValues(challenge);
+
+      const publicKeyCredentialRequestOptions = {
+        challenge: challenge,
+        allowCredentials: [{
+          id: base64ToBuffer(user.credentialId),
+          type: 'public-key',
+          transports: ['internal']
+        }],
+        timeout: 60000,
+        userVerification: "required"
+      };
+
+      const assertion = await navigator.credentials.get({
+        publicKey: publicKeyCredentialRequestOptions
+      });
+
+      // Verification successful - mark attendance
+      const now = new Date();
+      const attendanceData = {
+        name: user.name,
+        date: now.toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' }),
+        day: now.toLocaleDateString('en-US', { weekday: 'long' }),
+        time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        timestamp: now.toISOString(),
+        verified: true
+      };
+
+      await sendToGoogleSheets(attendanceData);
+      
+      setMessage({ text: `Attendance marked for ${user.name}! ✓`, type: 'success' });
+      setSelectedUser('');
+      setTimeout(() => {
+        setMode('home');
+        setMessage({ text: '', type: '' });
+      }, 2000);
     } catch (error) {
-      setMessage({ text: 'Attendance marking failed. Please try again.', type: 'error' });
-      console.error('Error:', error);
+      console.error('Authentication error:', error);
+      if (error.name === 'NotAllowedError') {
+        setMessage({ text: 'Authentication failed - fingerprint not recognized', type: 'error' });
+      } else {
+        setMessage({ text: 'Verification failed. Please try again.', type: 'error' });
+      }
     } finally {
       setScanning(false);
     }
@@ -160,9 +247,20 @@ const FingerprintAttendance = () => {
         {/* Header */}
         <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
           <div className="flex items-center justify-center mb-4">
-            <User className="w-12 h-12 text-indigo-600 mr-3" />
-            <h1 className="text-3xl font-bold text-gray-800">Fingerprint Attendance</h1>
+            <Fingerprint className="w-12 h-12 text-indigo-600 mr-3" />
+            <h1 className="text-3xl font-bold text-gray-800">Biometric Attendance</h1>
           </div>
+          
+          {!webAuthnAvailable && (
+            <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-4">
+              <div className="flex">
+                <AlertCircle className="w-5 h-5 text-yellow-400 mr-2" />
+                <p className="text-sm text-yellow-700">
+                  WebAuthn not supported on this browser/device. Please use a compatible device with biometric authentication.
+                </p>
+              </div>
+            </div>
+          )}
           
           {/* Current Date & Time */}
           <div className="bg-indigo-50 rounded-lg p-4 space-y-2">
@@ -186,14 +284,15 @@ const FingerprintAttendance = () => {
               <h2 className="text-2xl font-bold text-center text-gray-800 mb-6">Select Action</h2>
               <button
                 onClick={() => setMode('register')}
-                className="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-4 px-6 rounded-lg flex items-center justify-center transition-colors"
+                disabled={!webAuthnAvailable}
+                className="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-4 px-6 rounded-lg flex items-center justify-center transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
               >
                 <UserPlus className="w-6 h-6 mr-3" />
                 Register New User
               </button>
               <button
                 onClick={() => setMode('attendance')}
-                disabled={registeredUsers.length === 0}
+                disabled={registeredUsers.length === 0 || !webAuthnAvailable}
                 className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 px-6 rounded-lg flex items-center justify-center transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
               >
                 <LogIn className="w-6 h-6 mr-3" />
@@ -210,6 +309,7 @@ const FingerprintAttendance = () => {
                       <div key={user.id} className="bg-gray-50 p-3 rounded-lg flex items-center">
                         <User className="w-5 h-5 text-gray-600 mr-3" />
                         <span className="text-gray-800">{user.name}</span>
+                        <Fingerprint className="w-4 h-4 text-green-600 ml-auto" />
                       </div>
                     ))}
                   </div>
@@ -252,10 +352,10 @@ const FingerprintAttendance = () => {
                 <div className="bg-indigo-50 border-2 border-indigo-200 rounded-lg p-8 text-center">
                   <div className="animate-pulse flex flex-col items-center">
                     <div className="w-24 h-24 bg-indigo-600 rounded-full mb-4 flex items-center justify-center">
-                      <User className="w-12 h-12 text-white" />
+                      <Fingerprint className="w-12 h-12 text-white" />
                     </div>
-                    <p className="text-indigo-700 font-semibold">Scanning fingerprint...</p>
-                    <p className="text-indigo-600 text-sm mt-2">Please place your finger on the sensor</p>
+                    <p className="text-indigo-700 font-semibold">Authenticating...</p>
+                    <p className="text-indigo-600 text-sm mt-2">Use your device's biometric sensor</p>
                   </div>
                 </div>
               )}
@@ -274,10 +374,11 @@ const FingerprintAttendance = () => {
 
               <button
                 onClick={handleRegister}
-                disabled={scanning || !userName.trim()}
-                className="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-4 px-6 rounded-lg transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
+                disabled={scanning || !userName.trim() || !webAuthnAvailable}
+                className="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-4 px-6 rounded-lg transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center"
               >
-                {scanning ? 'Scanning...' : 'Register Fingerprint'}
+                <Fingerprint className="w-5 h-5 mr-2" />
+                {scanning ? 'Authenticating...' : 'Register Biometric'}
               </button>
             </div>
           )}
@@ -317,10 +418,10 @@ const FingerprintAttendance = () => {
                 <div className="bg-indigo-50 border-2 border-indigo-200 rounded-lg p-8 text-center">
                   <div className="animate-pulse flex flex-col items-center">
                     <div className="w-24 h-24 bg-indigo-600 rounded-full mb-4 flex items-center justify-center">
-                      <User className="w-12 h-12 text-white" />
+                      <Fingerprint className="w-12 h-12 text-white" />
                     </div>
-                    <p className="text-indigo-700 font-semibold">Verifying fingerprint...</p>
-                    <p className="text-indigo-600 text-sm mt-2">Please place your finger on the sensor</p>
+                    <p className="text-indigo-700 font-semibold">Verifying biometric...</p>
+                    <p className="text-indigo-600 text-sm mt-2">Use your device's biometric sensor</p>
                   </div>
                 </div>
               )}
@@ -339,10 +440,11 @@ const FingerprintAttendance = () => {
 
               <button
                 onClick={handleAttendance}
-                disabled={scanning || !selectedUser}
-                className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 px-6 rounded-lg transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
+                disabled={scanning || !selectedUser || !webAuthnAvailable}
+                className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 px-6 rounded-lg transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center"
               >
-                {scanning ? 'Verifying...' : 'Scan Fingerprint & Mark Attendance'}
+                <Fingerprint className="w-5 h-5 mr-2" />
+                {scanning ? 'Verifying...' : 'Verify Biometric & Mark Attendance'}
               </button>
             </div>
           )}
