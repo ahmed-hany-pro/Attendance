@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fingerprint Attendance System</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🔐 Fingerprint Attendance System</h1>
+            <div id="status" class="status"></div>
+        </header>
+
+        <main>
+            <!-- Registration Section -->
+            <div id="registrationSection" class="section">
+                <h2>Register New User</h2>
+                <div class="form-group">
+                    <label for="userName">Full Name:</label>
+                    <input type="text" id="userName" placeholder="Enter your full name" required>
+                </div>
+                <button id="registerBtn" class="btn btn-primary">
+                    <span class="icon">👤</span> Register Fingerprint
+                </button>
+                <p class="note">Note: You'll need to scan your fingerprint twice to register.</p>
+            </div>
+
+            <!-- Login Section -->
+            <div id="loginSection" class="section">
+                <h2>Mark Attendance</h2>
+                <button id="loginBtn" class="btn btn-success">
+                    <span class="icon">✓</span> Scan Fingerprint to Login
+                </button>
+                <div id="loginResult" class="result"></div>
+            </div>
+
+            <!-- Registered Users Section -->
+            <div id="usersSection" class="section">
+                <h2>Registered Users</h2>
+                <div id="usersList" class="users-list">
+                    <p class="loading">Loading users...</p>
+                </div>
+                <button id="refreshUsersBtn" class="btn btn-secondary">
+                    <span class="icon">🔄</span> Refresh List
+                </button>
+            </div>
+        </main>
+
+        <footer>
+            <p>Powered by WebAuthn API | Data stored in Google Sheets</p>
+        </footer>
+    </div>
+
+    <!-- Modal for messages -->
+    <div id="modal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h3 id="modalTitle"></h3>
+            <p id="modalMessage"></p>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
