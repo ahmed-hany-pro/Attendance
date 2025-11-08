@@ -8,8 +8,10 @@ const GOOGLE_SHEETS_CONFIG = {
 // DOM Elements
 const registerBtn = document.getElementById("registerBtn");
 const loginBtn = document.getElementById("loginBtn");
+const reregisterBtn = document.getElementById("reregisterBtn");
 const refreshUsersBtn = document.getElementById("refreshUsersBtn");
 const userName = document.getElementById("userName");
+const reregisterName = document.getElementById("reregisterName");
 const loginResult = document.getElementById("loginResult");
 const usersList = document.getElementById("usersList");
 const status = document.getElementById("status");
@@ -135,58 +137,20 @@ async function registerUser() {
     return;
   }
 
+  // Check if user already exists
+  const storedUsers = JSON.parse(localStorage.getItem("users") || "[]");
+  if (storedUsers.some(u => u.name === name)) {
+    showStatus("User already registered! Use 'Re-register Fingerprint' to update.", "error");
+    return;
+  }
+
   try {
     registerBtn.disabled = true;
     showStatus("Preparing fingerprint registration...", "info");
 
-    // Create credential
-    const challenge = new Uint8Array(32);
-    window.crypto.getRandomValues(challenge);
-
-    const publicKeyCredentialCreationOptions = {
-      challenge: challenge,
-      rp: {
-        name: "Attendance System",
-        id: window.location.hostname,
-      },
-      user: {
-        id: new Uint8Array(16),
-        name: name,
-        displayName: name,
-      },
-      pubKeyCredParams: [
-        { alg: -7, type: "public-key" }, // ES256
-        { alg: -257, type: "public-key" }, // RS256
-      ],
-      authenticatorSelection: {
-        authenticatorAttachment: "platform",
-        userVerification: "required",
-      },
-      timeout: 60000,
-      attestation: "none",
-    };
-
-    window.crypto.getRandomValues(publicKeyCredentialCreationOptions.user.id);
-
-    showStatus("Please scan your fingerprint...", "info");
-
-    const credential = await navigator.credentials.create({
-      publicKey: publicKeyCredentialCreationOptions,
-    });
-
-    log("Credential created", credential);
+    const credentialId = await createFingerprint(name);
 
     // Store credential locally
-    const credentialId = arrayBufferToBase64(credential.rawId);
-    const storedUsers = JSON.parse(localStorage.getItem("users") || "[]");
-    
-    // Check if user already exists
-    if (storedUsers.some(u => u.name === name)) {
-      showStatus("User already registered!", "error");
-      registerBtn.disabled = false;
-      return;
-    }
-
     storedUsers.push({
       name: name,
       credentialId: credentialId,
@@ -204,6 +168,7 @@ async function registerUser() {
     showStatus("Registration successful!", "success");
     userName.value = "";
     loadUsers();
+    updateReregisterDropdown();
 
     showModal(
       "Registration Successful!",
@@ -219,6 +184,100 @@ async function registerUser() {
   } finally {
     registerBtn.disabled = false;
   }
+}
+
+// Re-register User Fingerprint
+async function reregisterUser() {
+  const name = reregisterName.value;
+  if (!name) {
+    showStatus("Please select a user", "error");
+    return;
+  }
+
+  try {
+    reregisterBtn.disabled = true;
+    showStatus("Preparing fingerprint re-registration...", "info");
+
+    const newCredentialId = await createFingerprint(name);
+
+    // Update credential locally
+    let storedUsers = JSON.parse(localStorage.getItem("users") || "[]");
+    const userIndex = storedUsers.findIndex(u => u.name === name);
+    
+    if (userIndex !== -1) {
+      const oldCredentialId = storedUsers[userIndex].credentialId;
+      storedUsers[userIndex].credentialId = newCredentialId;
+      storedUsers[userIndex].updatedAt = new Date().toISOString();
+      localStorage.setItem("users", JSON.stringify(storedUsers));
+
+      // Send update to Google Sheets
+      await sendToGoogleSheets("reregister", {
+        name: name,
+        oldCredentialId: oldCredentialId,
+        newCredentialId: newCredentialId,
+        updatedAt: new Date().toISOString(),
+      });
+
+      showStatus("Fingerprint re-registered successfully!", "success");
+      reregisterName.value = "";
+      loadUsers();
+
+      showModal(
+        "Re-registration Successful!",
+        `${name}'s fingerprint has been updated. You can now use your new fingerprint to mark attendance.`
+      );
+    }
+  } catch (error) {
+    log("Re-registration error", error);
+    if (error.name === "NotAllowedError") {
+      showStatus("Re-registration cancelled or fingerprint not recognized", "error");
+    } else {
+      showStatus(`Re-registration failed: ${error.message}`, "error");
+    }
+  } finally {
+    reregisterBtn.disabled = false;
+  }
+}
+
+// Create Fingerprint Credential (shared function)
+async function createFingerprint(name) {
+  const challenge = new Uint8Array(32);
+  window.crypto.getRandomValues(challenge);
+
+  const publicKeyCredentialCreationOptions = {
+    challenge: challenge,
+    rp: {
+      name: "Attendance System",
+      id: window.location.hostname,
+    },
+    user: {
+      id: new Uint8Array(16),
+      name: name,
+      displayName: name,
+    },
+    pubKeyCredParams: [
+      { alg: -7, type: "public-key" }, // ES256
+      { alg: -257, type: "public-key" }, // RS256
+    ],
+    authenticatorSelection: {
+      authenticatorAttachment: "platform",
+      userVerification: "required",
+    },
+    timeout: 60000,
+    attestation: "none",
+  };
+
+  window.crypto.getRandomValues(publicKeyCredentialCreationOptions.user.id);
+
+  showStatus("Please scan your fingerprint...", "info");
+
+  const credential = await navigator.credentials.create({
+    publicKey: publicKeyCredentialCreationOptions,
+  });
+
+  log("Credential created", credential);
+
+  return arrayBufferToBase64(credential.rawId);
 }
 
 // Login User
@@ -323,6 +382,7 @@ function loadUsers() {
                     <small style="color: #999;">Registered: ${new Date(
                       user.registeredAt
                     ).toLocaleString()}</small>
+                    ${user.updatedAt ? `<br><small style="color: #667eea;">Updated: ${new Date(user.updatedAt).toLocaleString()}</small>` : ''}
                 </div>
             </div>
             <button class="btn btn-danger" onclick="deleteUser('${user.credentialId}')">
@@ -332,6 +392,19 @@ function loadUsers() {
     `
     )
     .join("");
+}
+
+// Update Re-register Dropdown
+function updateReregisterDropdown() {
+  const storedUsers = JSON.parse(localStorage.getItem("users") || "[]");
+  
+  reregisterName.innerHTML = '<option value="">-- Select a user --</option>';
+  storedUsers.forEach(user => {
+    const option = document.createElement('option');
+    option.value = user.name;
+    option.textContent = user.name;
+    reregisterName.appendChild(option);
+  });
 }
 
 // Delete User
@@ -356,13 +429,18 @@ function deleteUser(credentialId) {
 
 // Event Listeners
 registerBtn.addEventListener("click", registerUser);
+reregisterBtn.addEventListener("click", reregisterUser);
 loginBtn.addEventListener("click", loginUser);
-refreshUsersBtn.addEventListener("click", loadUsers);
+refreshUsersBtn.addEventListener("click", () => {
+  loadUsers();
+  updateReregisterDropdown();
+});
 
 // Initialize
 window.addEventListener("DOMContentLoaded", () => {
   if (checkWebAuthnSupport()) {
     loadUsers();
+    updateReregisterDropdown();
     showStatus("System ready", "success");
   }
 });
