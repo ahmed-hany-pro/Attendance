@@ -161,13 +161,22 @@
                 return;
             }
             state.userRole = 'person2';
-            state.view = 'connected';
-            state.partnerConnected = true;
+            state.view = 'languageSetup';
             initSpeechRecognition();
             render();
         }
 
         function simulatePartnerJoin() {
+            state.partnerConnected = true;
+            state.view = 'connected';
+            render();
+        }
+
+        function continueToChat() {
+            if (!state.partnerLanguage) {
+                alert('Please select partner language');
+                return;
+            }
             state.partnerConnected = true;
             state.view = 'connected';
             render();
@@ -288,6 +297,71 @@
             `;
         }
 
+        function renderLanguageSetup() {
+            return `
+                <div class="flex items-center justify-center p-4 min-h-screen">
+                    <div class="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full">
+                        <div class="flex items-center justify-center mb-6">
+                            <svg class="w-12 h-12 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                            </svg>
+                        </div>
+                        <h2 class="text-2xl font-bold text-center mb-2 text-gray-800">
+                            Joined Room: ${state.roomCode}
+                        </h2>
+                        <p class="text-center text-gray-600 mb-8">
+                            Set up your translation preferences
+                        </p>
+
+                        <div class="space-y-6">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">
+                                    Your Language
+                                </label>
+                                <select
+                                    id="myLanguageSelect2"
+                                    onchange="state.myLanguage = this.value; render();"
+                                    class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                                >
+                                    ${LANGUAGES.map(lang => `
+                                        <option value="${lang.code}" ${state.myLanguage === lang.code ? 'selected' : ''}>
+                                            ${lang.flag} ${lang.name}
+                                        </option>
+                                    `).join('')}
+                                </select>
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">
+                                    Partner's Language
+                                </label>
+                                <select
+                                    id="partnerLanguageSelect2"
+                                    onchange="state.partnerLanguage = this.value; render();"
+                                    class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                                >
+                                    <option value="">Select language...</option>
+                                    ${LANGUAGES.map(lang => `
+                                        <option value="${lang.code}" ${state.partnerLanguage === lang.code ? 'selected' : ''}>
+                                            ${lang.flag} ${lang.name}
+                                        </option>
+                                    `).join('')}
+                                </select>
+                            </div>
+
+                            <button
+                                onclick="continueToChat()"
+                                ${!state.partnerLanguage ? 'disabled' : ''}
+                                class="w-full bg-indigo-600 text-white py-3 rounded-lg font-semibold hover:bg-indigo-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                Start Conversation
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
         function renderConnected() {
             const myLang = LANGUAGES.find(l => l.code === state.myLanguage);
             const partnerLang = LANGUAGES.find(l => l.code === state.partnerLanguage);
@@ -386,6 +460,8 @@
                 html = renderSetup();
             } else if (state.view === 'waiting') {
                 html = renderWaiting();
+            } else if (state.view === 'languageSetup') {
+                html = renderLanguageSetup();
             } else if (state.view === 'connected') {
                 html = renderConnected();
             }
