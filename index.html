@@ -51,24 +51,35 @@
             if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
                 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
                 state.recognition = new SpeechRecognition();
-                state.recognition.continuous = true;
+                state.recognition.continuous = false;
                 state.recognition.interimResults = true;
                 state.recognition.lang = state.myLanguage;
 
+                let interimTranscript = '';
+
                 state.recognition.onresult = (event) => {
+                    interimTranscript = '';
                     let finalTranscript = '';
+                    
                     for (let i = event.resultIndex; i < event.results.length; i++) {
                         const transcript = event.results[i][0].transcript;
                         if (event.results[i].isFinal) {
                             finalTranscript += transcript;
+                        } else {
+                            interimTranscript += transcript;
                         }
                     }
                     
-                    if (finalTranscript) {
-                        state.transcript = finalTranscript;
-                        render();
-                        translateText(finalTranscript, state.myLanguage, state.partnerLanguage);
+                    state.transcript = interimTranscript || finalTranscript;
+                    render();
+                };
+
+                state.recognition.onend = () => {
+                    if (state.transcript && state.isListening) {
+                        translateText(state.transcript, state.myLanguage, state.partnerLanguage);
                     }
+                    state.isListening = false;
+                    render();
                 };
 
                 state.recognition.onerror = (event) => {
@@ -416,7 +427,7 @@
                             `}
                         </button>
                         <p class="mt-4 text-gray-600">
-                            ${state.isListening ? 'Listening... Tap to stop' : 'Tap to speak'}
+                            ${state.isListening ? 'Listening... Stop when finished' : 'Tap microphone and speak'}
                         </p>
                         ${state.transcript ? `
                             <div class="mt-4 p-4 bg-blue-50 rounded-lg">
