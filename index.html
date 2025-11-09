@@ -35,6 +35,7 @@
         const state = {
             view: 'setup',
             userRole: '',
+            userId: 'user_' + Math.random().toString(36).substr(2, 9),
             myLanguage: 'en-US',
             partnerLanguage: '',
             roomCode: '',
@@ -44,8 +45,98 @@
             messages: [],
             partnerConnected: false,
             recognition: null,
-            synth: window.speechSynthesis
+            synth: window.speechSynthesis,
+            isTranslating: false
         };
+
+        // Listen for messages from other tabs/windows
+        window.addEventListener('storage', (e) => {
+            if (e.key && e.key.startsWith('room_' + state.roomCode + '_')) {
+                const messageData = JSON.parse(e.newValue);
+                
+                // Only process messages from other users
+                if (messageData.senderId !== state.userId) {
+                    handleIncomingMessage(messageData);
+                }
+            }
+            
+            // Check if partner joined
+            if (e.key === 'room_' + state.roomCode + '_partner') {
+                state.partnerConnected = true;
+                const partnerData = JSON.parse(e.newValue);
+                if (!state.partnerLanguage) {
+                    state.partnerLanguage = partnerData.language;
+                }
+                render();
+            }
+        });
+
+        function handleIncomingMessage(messageData) {
+            // Add to messages
+            const newMessage = {
+                original: messageData.original,
+                translated: messageData.translated,
+                fromLang: messageData.fromLang,
+                toLang: messageData.toLang,
+                speaker: 'partner',
+                timestamp: messageData.timestamp
+            };
+            
+            state.messages.push(newMessage);
+            
+            // Speak the translation
+            speakText(messageData.translated, state.myLanguage);
+            render();
+        }
+
+        function broadcastMessage(original, translated, fromLang, toLang) {
+            const messageData = {
+                senderId: state.userId,
+                original: original,
+                translated: translated,
+                fromLang: fromLang,
+                toLang: toLang,
+                timestamp: new Date().toLocaleTimeString()
+            };
+            
+            const messageKey = 'room_' + state.roomCode + '_msg_' + Date.now();
+            localStorage.setItem(messageKey, JSON.stringify(messageData));
+            
+            // Clean up old messages
+            setTimeout(() => {
+                localStorage.removeItem(messageKey);
+            }, 1000);
+        }
+
+        function announcePresence() {
+            const presenceData = {
+                userId: state.userId,
+                language: state.myLanguage,
+                timestamp: Date.now()
+            };
+            localStorage.setItem('room_' + state.roomCode + '_partner', JSON.stringify(presenceData));
+        }
+
+        function checkPartnerPresence() {
+            const partnerKey = 'room_' + state.roomCode + '_partner';
+            const partnerData = localStorage.getItem(partnerKey);
+            
+            if (partnerData) {
+                const data = JSON.parse(partnerData);
+                if (data.userId !== state.userId) {
+                    state.partnerConnected = true;
+                    if (!state.partnerLanguage) {
+                        state.partnerLanguage = data.language;
+                    }
+                    render();
+                }
+            }
+            
+            // Keep announcing presence
+            if (state.view === 'waiting' || state.view === 'connected') {
+                setTimeout(checkPartnerPresence, 2000);
+            }
+        }
 
         function initSpeechRecognition() {
             if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
@@ -75,7 +166,8 @@
                 };
 
                 state.recognition.onend = () => {
-                    if (state.transcript && state.isListening) {
+                    if (state.transcript && state.isListening && !state.isTranslating) {
+                        state.isTranslating = true;
                         translateText(state.transcript, state.myLanguage, state.partnerLanguage);
                     }
                     state.isListening = false;
@@ -85,6 +177,7 @@
                 state.recognition.onerror = (event) => {
                     console.error('Speech recognition error:', event.error);
                     state.isListening = false;
+                    state.isTranslating = false;
                     render();
                 };
             }
@@ -119,16 +212,21 @@
                     translated: translatedText,
                     fromLang,
                     toLang,
-                    speaker: state.userRole,
+                    speaker: 'me',
                     timestamp: new Date().toLocaleTimeString()
                 };
                 state.messages.push(newMessage);
                 
-                speakText(translatedText, toLang);
+                // Broadcast to partner
+                broadcastMessage(text, translatedText, fromLang, toLang);
+                
+                state.isTranslating = false;
                 render();
                 
             } catch (error) {
                 console.error('Translation error:', error);
+                state.isTranslating = false;
+                render();
             }
         }
 
@@ -163,6 +261,8 @@
             state.userRole = 'person1';
             state.view = 'waiting';
             initSpeechRecognition();
+            announcePresence();
+            checkPartnerPresence();
             render();
         }
 
@@ -180,6 +280,8 @@
         function simulatePartnerJoin() {
             state.partnerConnected = true;
             state.view = 'connected';
+            announcePresence();
+            checkPartnerPresence();
             render();
         }
 
@@ -190,6 +292,8 @@
             }
             state.partnerConnected = true;
             state.view = 'connected';
+            announcePresence();
+            checkPartnerPresence();
             render();
         }
 
@@ -205,9 +309,14 @@
                         <h1 class="text-3xl font-bold text-center mb-2 text-gray-800">
                             Real-Time Translator
                         </h1>
-                        <p class="text-center text-gray-600 mb-8">
+                        <p class="text-center text-gray-600 mb-4">
                             Speak in your language, they hear in theirs
                         </p>
+                        <div class="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-6">
+                            <p class="text-xs text-blue-800">
+                                💡 <strong>How to test:</strong> Open this page in 2 browser tabs. Create a room in one tab, join with the code in the other tab.
+                            </p>
+                        </div>
 
                         <div class="space-y-6">
                             <div>
@@ -273,11 +382,16 @@
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"></path>
                         </svg>
                         <h2 class="text-2xl font-bold mb-4 text-gray-800">Waiting for Partner</h2>
-                        <p class="text-gray-600 mb-6">Share this room code:</p>
-                        <div class="bg-indigo-50 border-2 border-indigo-200 rounded-lg p-4 mb-6">
+                        <p class="text-gray-600 mb-2">Share this room code:</p>
+                        <div class="bg-indigo-50 border-2 border-indigo-200 rounded-lg p-4 mb-4">
                             <div class="text-4xl font-bold text-indigo-600 tracking-wider">
                                 ${state.roomCode}
                             </div>
+                        </div>
+                        <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-3 mb-6">
+                            <p class="text-xs text-yellow-800">
+                                📱 Open another tab, click "Join Room" and enter: <strong>${state.roomCode}</strong>
+                            </p>
                         </div>
                         <div class="mb-6">
                             <label class="block text-sm font-medium text-gray-700 mb-2">
@@ -301,7 +415,7 @@
                             ${!state.partnerLanguage ? 'disabled' : ''}
                             class="bg-green-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-green-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
                         >
-                            Simulate Partner Join (Demo)
+                            Continue to Chat
                         </button>
                     </div>
                 </div>
@@ -391,15 +505,15 @@
                                 <div>
                                     <h2 class="font-bold text-lg text-gray-800">Room: ${state.roomCode}</h2>
                                     <p class="text-sm text-gray-600">
-                                        ${myLang.flag} ${myLang.name} → ${partnerLang.flag} ${partnerLang.name}
+                                        ${myLang.flag} ${myLang.name} ↔ ${partnerLang.flag} ${partnerLang.name}
                                     </p>
                                 </div>
                             </div>
-                            <div class="${state.partnerConnected ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'} px-4 py-2 rounded-full">
-                                <svg class="w-5 h-5 inline mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <div class="${state.partnerConnected ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'} px-4 py-2 rounded-full text-sm">
+                                <svg class="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"></path>
                                 </svg>
-                                ${state.partnerConnected ? 'Connected' : 'Waiting...'}
+                                ${state.partnerConnected ? 'Connected' : 'Solo Mode'}
                             </div>
                         </div>
                     </div>
@@ -408,17 +522,16 @@
                     <div class="bg-white rounded-2xl shadow-lg p-8 mb-4 text-center">
                         <button
                             onclick="toggleListening()"
-                            ${!state.partnerConnected ? 'disabled' : ''}
                             class="mx-auto w-24 h-24 rounded-full flex items-center justify-center transition-all transform hover:scale-105 ${
                                 state.isListening 
                                     ? 'bg-red-500 hover:bg-red-600 animate-pulse' 
                                     : 'bg-indigo-600 hover:bg-indigo-700'
-                            } disabled:opacity-50 disabled:cursor-not-allowed"
+                            }"
                         >
                             ${state.isListening ? `
                                 <svg class="w-10 h-10 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" clip-rule="evenodd"></path>
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2"></path>
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z"></path>
                                 </svg>
                             ` : `
                                 <svg class="w-10 h-10 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -426,10 +539,15 @@
                                 </svg>
                             `}
                         </button>
-                        <p class="mt-4 text-gray-600">
-                            ${state.isListening ? 'Listening... Stop when finished' : 'Tap microphone and speak'}
+                        <p class="mt-4 text-gray-600 font-medium">
+                            ${state.isListening ? '🎤 Listening... Speak now' : 'Tap microphone to speak'}
                         </p>
-                        ${state.transcript ? `
+                        ${state.isTranslating ? `
+                            <div class="mt-4 p-3 bg-purple-50 rounded-lg">
+                                <p class="text-sm text-purple-700">🔄 Translating...</p>
+                            </div>
+                        ` : ''}
+                        ${state.transcript && !state.isTranslating ? `
                             <div class="mt-4 p-4 bg-blue-50 rounded-lg">
                                 <p class="text-sm text-gray-600 mb-1">You said:</p>
                                 <p class="text-gray-800">${state.transcript}</p>
@@ -446,15 +564,19 @@
                                     Start speaking to begin the conversation
                                 </p>
                             ` : state.messages.map((msg, idx) => `
-                                <div class="border-l-4 border-indigo-400 pl-4 py-2">
+                                <div class="${msg.speaker === 'me' ? 'border-l-4 border-indigo-400' : 'border-l-4 border-green-400'} pl-4 py-2">
                                     <div class="flex items-center justify-between mb-1">
-                                        <span class="text-xs text-gray-500">${msg.timestamp}</span>
-                                        <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"></path>
-                                        </svg>
+                                        <span class="text-xs font-medium ${msg.speaker === 'me' ? 'text-indigo-600' : 'text-green-600'}">
+                                            ${msg.speaker === 'me' ? 'You' : 'Partner'} • ${msg.timestamp}
+                                        </span>
+                                        ${msg.speaker === 'partner' ? `
+                                            <svg class="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"></path>
+                                            </svg>
+                                        ` : ''}
                                     </div>
-                                    <p class="text-gray-800 mb-1">${msg.original}</p>
-                                    <p class="text-indigo-600 font-medium">→ ${msg.translated}</p>
+                                    <p class="text-gray-600 text-sm mb-1">${msg.original}</p>
+                                    <p class="${msg.speaker === 'me' ? 'text-indigo-700' : 'text-green-700'} font-medium">→ ${msg.translated}</p>
                                 </div>
                             `).join('')}
                         </div>
